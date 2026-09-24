@@ -6,7 +6,7 @@ import os.path
 import sys
 
 
-__version__ = '0.6.3'
+__version__ = '0.6.3.1'
 
 
 # From https://circleci.com/blog/continuously-deploying-python-packages-to-pypi-with-circleci/
@@ -81,8 +81,8 @@ setup(
     description='Vertica dialect for sqlalchemy using vertica_python',
     long_description=open("README.rst").read(),
     license="MIT",
-    url='https://github.com/bluelabsio/sqlalchemy-vertica-python',
-    download_url = 'https://github.com/bluelabsio/sqlalchemy-vertica-python/tarball/{}'.format(__version__),
+    url='https://github.com/preset-io/sqlalchemy-vertica-python',
+    download_url = 'https://github.com/preset-io/sqlalchemy-vertica-python/tarball/{}'.format(__version__),
     author='James Casbon, Luke Emery-Fertitta',
     maintainer='Vince Broz',
     maintainer_email='opensource@bluelabs.com',
@@ -103,7 +103,8 @@ setup(
     vertica.vertica_python = sqla_vertica_python.vertica_python:VerticaDialect
     """,
     install_requires=[
-        'vertica_python'
+        'sqlalchemy>=2.0,<2.1',
+        'vertica_python>=0.10.2'
     ],
     cmdclass={
         'coverage_ratchet': TestCoverageRatchetCommand,

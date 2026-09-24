@@ -1,9 +1,10 @@
 import re
-from sqlalchemy import text
+from sqlalchemy import text, exc
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.postgresql import INTERVAL
 from sqlalchemy.engine import reflection
+from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.schema import CreateColumn
 from sqlalchemy.ext.compiler import compiles
 
@@ -21,6 +22,26 @@ class VerticaDialect(PGDialect):
 
     name = 'vertica'
     driver = 'vertica_python'
+
+    # PostgreSQL bulk reflection queries pg_catalog, which Vertica does not
+    # implement. Use SQLAlchemy's supported per-table reflection adapter for
+    # *every* bulk API, including those used by Table/MetaData autoload.
+    get_multi_columns = DefaultDialect.get_multi_columns
+    get_multi_pk_constraint = DefaultDialect.get_multi_pk_constraint
+    get_multi_foreign_keys = DefaultDialect.get_multi_foreign_keys
+    get_multi_indexes = DefaultDialect.get_multi_indexes
+    get_multi_unique_constraints = DefaultDialect.get_multi_unique_constraints
+    get_multi_check_constraints = DefaultDialect.get_multi_check_constraints
+    get_multi_table_comment = DefaultDialect.get_multi_table_comment
+    get_multi_table_options = DefaultDialect.get_multi_table_options
+
+    # These optional PostgreSQL reflection APIs must not issue pg_catalog SQL
+    # either. The base dialect reports unsupported operations explicitly.
+    get_materialized_view_names = DefaultDialect.get_materialized_view_names
+    get_temp_table_names = DefaultDialect.get_temp_table_names
+    get_temp_view_names = DefaultDialect.get_temp_view_names
+
+    supports_statement_cache = False
 
     # UPDATE functionality works with the following option set to False
     supports_sane_rowcount = False
@@ -114,7 +135,8 @@ class VerticaDialect(PGDialect):
         return bool(rs.scalar())
 
 
-    def has_table(self, connection, table_name, schema=None):
+    @reflection.cache
+    def has_table(self, connection, table_name, schema=None, **kw):
         if schema is None:
             schema = self._get_default_schema_name(connection)
         query = ("SELECT EXISTS ("
@@ -242,7 +264,10 @@ class VerticaDialect(PGDialect):
         """.format(table_name=table_name, schema_conditional=schema_conditional)
         colobjs = []
         column_select_results = list(connection.execute(text(column_select)))
-        for row in list(connection.execute(text(column_select))):
+        if not column_select_results and not self.has_table(
+                connection, table_name, schema=schema, **kw):
+            raise exc.NoSuchTableError(table_name)
+        for row in column_select_results:
             sequence_info = connection.execute(text("""
                 SELECT
                 sequence_name as name,
@@ -305,7 +330,7 @@ class VerticaDialect(PGDialect):
         if is_identity:
             column_info['autoincrement'] = True
         if sequence:
-            column_info['sequence'] = dict(sequence)
+            column_info['sequence'] = dict(sequence._mapping)
         return column_info
 
     @reflection.cache
@@ -317,7 +342,7 @@ class VerticaDialect(PGDialect):
              query += " AND table_schema = '" + schema + "'"
         query += " AND constraint_type = 'u'"
 
-        rs = connection.execute(text(query))
+        rs = connection.execute(text(query)).all()
 
         unique_names = {row[1] for row in rs}
 
@@ -384,11 +409,11 @@ class VerticaDialect(PGDialect):
         return {"constrained_columns": list(cols), "name": name}
 
 
-    def get_foreign_keys(self, connection, table_name, schema, **kw):
+    def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         return []
 
 
-    def get_indexes(self, connection, table_name, schema, **kw):
+    def get_indexes(self, connection, table_name, schema=None, **kw):
         return []
 
 
