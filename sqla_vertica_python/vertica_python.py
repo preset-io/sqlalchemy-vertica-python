@@ -43,6 +43,12 @@ class VerticaDialect(PGDialect):
 
     supports_statement_cache = False
 
+    # Vertica has no RETURNING; SQLAlchemy 2 uses these flags even before
+    # initialize(), rather than the legacy implicit_returning setting.
+    insert_returning = False
+    update_returning = False
+    delete_returning = False
+
     # UPDATE functionality works with the following option set to False
     supports_sane_rowcount = False
 
@@ -100,7 +106,6 @@ class VerticaDialect(PGDialect):
     # skip all the version-specific stuff in PGDialect's initialize method (Vertica versions don't match feature-wise)
     def initialize(self, connection):
         super(PGDialect, self).initialize(connection)
-        self.implicit_returning = False
 
     def is_disconnect(self, e, connection, cursor):
         return (

@@ -30,7 +30,8 @@ podTemplate(
                     sh '''
                         set -eu
                         python -m venv .venv
-                        .venv/bin/pip install 'sqlalchemy==2.0.52' 'vertica-python==0.10.2' pytest build
+                        .venv/bin/pip install 'sqlalchemy==2.0.52' 'vertica-python==0.10.2' pytest 'boto3>=1.36,<2' \
+                            'build==1.4.4' 'setuptools==80.9.0' 'wheel==0.45.1'
                         .venv/bin/pip install --no-deps .
                         .venv/bin/python -m pytest -q tests/unit
                         python - <<'PY'
@@ -43,9 +44,14 @@ assert sum(line.startswith('__version__ = ') for line in lines) == 1
 path.write_text(''.join('__version__ = ' + repr(os.environ['PUBLISH_VERSION']) + '\\n'
                         if line.startswith('__version__ = ') else line for line in lines))
 PY
-                        SOURCE_DATE_EPOCH=$(git -c safe.directory="$PWD" log -1 --pretty=%ct)
+                        SOURCE_DATE_EPOCH=$(git -c safe.directory="$PWD" log -1 --format=%ct)
+                        case "$SOURCE_DATE_EPOCH" in
+                            ''|*[!0-9]*) echo "Invalid commit timestamp for reproducible build" >&2; exit 1 ;;
+                        esac
                         export SOURCE_DATE_EPOCH
-                        .venv/bin/python -m build --wheel
+                        # Pin the build backend and remove stale output for reproducible retries.
+                        rm -rf build dist sqlalchemy_vertica_python.egg-info
+                        .venv/bin/python -m build --wheel --no-isolation
                         .venv/bin/pip install --force-reinstall --no-deps dist/*.whl
                         .venv/bin/python - <<'PY'
 import importlib.metadata as im
@@ -68,22 +74,12 @@ PY
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
-                    withEnv(["WHEEL=${wheel}", "KEY=${key}"]) {
+                    withEnv(["WHEEL=${wheel}", "KEY=${key}",
+                             "ALLOW_IDENTICAL_PR_ARTIFACT=${isPR && !isMaster}"]) {
                         sh '''
                             set -eu
                             python -m pip install --quiet 'boto3>=1.36,<2'
-                            python - <<'PY'
-import hashlib
-import os
-from pathlib import Path
-import boto3
-body = Path('dist', os.environ['WHEEL']).read_bytes()
-s3 = boto3.client('s3')
-s3.put_object(Bucket='preset-pypi', Key=os.environ['KEY'], Body=body, IfNoneMatch='*')
-stored = s3.get_object(Bucket='preset-pypi', Key=os.environ['KEY'])['Body'].read()
-assert stored == body
-Path('published.sha256').write_text(hashlib.sha256(stored).hexdigest() + '  ' + os.environ['WHEEL'] + '\\n')
-PY
+                            python ci/publish_wheel.py
                         '''
                     }
                 }

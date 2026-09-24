@@ -15,6 +15,21 @@ BULK_METHODS = (
 )
 
 
+def test_autoincrement_insert_has_no_returning_before_initialize():
+    table = sa.Table(
+        'example', sa.MetaData(),
+        sa.Column('id', sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column('value', sa.String),
+    )
+    dialect = VerticaDialect()
+    compiled = table.insert().values(value='test').compile(dialect=dialect)
+    assert 'RETURNING' not in str(compiled).upper()
+    assert not compiled.implicit_returning
+    for operation in ('insert', 'update', 'delete'):
+        assert getattr(VerticaDialect, operation + '_returning') is False
+        assert getattr(dialect, operation + '_returning') is False
+
+
 def test_legacy_url_entry_point():
     engine = sa.create_engine('vertica+vertica_python://user@localhost/db')
     assert isinstance(engine.dialect, VerticaDialect)
