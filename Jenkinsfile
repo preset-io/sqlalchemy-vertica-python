@@ -40,7 +40,7 @@ path = Path('setup.py')
 source = path.read_text()
 lines = source.splitlines(keepends=True)
 assert sum(line.startswith('__version__ = ') for line in lines) == 1
-path.write_text(''.join('__version__ = ' + repr(os.environ['PUBLISH_VERSION']) + '\n'
+path.write_text(''.join('__version__ = ' + repr(os.environ['PUBLISH_VERSION']) + '\\n'
                         if line.startswith('__version__ = ') else line for line in lines))
 PY
                         export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
@@ -81,7 +81,7 @@ s3 = boto3.client('s3')
 s3.put_object(Bucket='preset-pypi', Key=os.environ['KEY'], Body=body, IfNoneMatch='*')
 stored = s3.get_object(Bucket='preset-pypi', Key=os.environ['KEY'])['Body'].read()
 assert stored == body
-Path('published.sha256').write_text(hashlib.sha256(stored).hexdigest() + '  ' + os.environ['WHEEL'] + '\n')
+Path('published.sha256').write_text(hashlib.sha256(stored).hexdigest() + '  ' + os.environ['WHEEL'] + '\\n')
 PY
                         '''
                     }
