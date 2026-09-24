@@ -1,9 +1,10 @@
 import re
-from sqlalchemy import text
+from sqlalchemy import text, exc, util
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.postgresql import INTERVAL
 from sqlalchemy.engine import reflection
+from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.schema import CreateColumn
 from sqlalchemy.ext.compiler import compiles
 
@@ -21,6 +22,32 @@ class VerticaDialect(PGDialect):
 
     name = 'vertica'
     driver = 'vertica_python'
+
+    # PostgreSQL bulk reflection queries pg_catalog, which Vertica does not
+    # implement. Use SQLAlchemy's supported per-table reflection adapter for
+    # *every* bulk API, including those used by Table/MetaData autoload.
+    get_multi_columns = DefaultDialect.get_multi_columns
+    get_multi_pk_constraint = DefaultDialect.get_multi_pk_constraint
+    get_multi_foreign_keys = DefaultDialect.get_multi_foreign_keys
+    get_multi_indexes = DefaultDialect.get_multi_indexes
+    get_multi_unique_constraints = DefaultDialect.get_multi_unique_constraints
+    get_multi_check_constraints = DefaultDialect.get_multi_check_constraints
+    get_multi_table_comment = DefaultDialect.get_multi_table_comment
+    get_multi_table_options = DefaultDialect.get_multi_table_options
+
+    # These optional PostgreSQL reflection APIs must not issue pg_catalog SQL
+    # either. The base dialect reports unsupported operations explicitly.
+    get_materialized_view_names = DefaultDialect.get_materialized_view_names
+    get_temp_table_names = DefaultDialect.get_temp_table_names
+    get_temp_view_names = DefaultDialect.get_temp_view_names
+
+    supports_statement_cache = False
+
+    # Vertica has no RETURNING; SQLAlchemy 2 uses these flags even before
+    # initialize(), rather than the legacy implicit_returning setting.
+    insert_returning = False
+    update_returning = False
+    delete_returning = False
 
     # UPDATE functionality works with the following option set to False
     supports_sane_rowcount = False
@@ -79,7 +106,6 @@ class VerticaDialect(PGDialect):
     # skip all the version-specific stuff in PGDialect's initialize method (Vertica versions don't match feature-wise)
     def initialize(self, connection):
         super(PGDialect, self).initialize(connection)
-        self.implicit_returning = False
 
     def is_disconnect(self, e, connection, cursor):
         return (
@@ -114,7 +140,8 @@ class VerticaDialect(PGDialect):
         return bool(rs.scalar())
 
 
-    def has_table(self, connection, table_name, schema=None):
+    @reflection.cache
+    def has_table(self, connection, table_name, schema=None, **kw):
         if schema is None:
             schema = self._get_default_schema_name(connection)
         query = ("SELECT EXISTS ("
@@ -242,7 +269,10 @@ class VerticaDialect(PGDialect):
         """.format(table_name=table_name, schema_conditional=schema_conditional)
         colobjs = []
         column_select_results = list(connection.execute(text(column_select)))
-        for row in list(connection.execute(text(column_select))):
+        if not column_select_results and not self.has_table(
+                connection, table_name, schema=schema, **kw):
+            raise exc.NoSuchTableError(table_name)
+        for row in column_select_results:
             sequence_info = connection.execute(text("""
                 SELECT
                 sequence_name as name,
@@ -278,7 +308,7 @@ class VerticaDialect(PGDialect):
         if not m:
             raise ValueError("data type string not parseable for type name and optional parameters: %s" % data_type)
         typename = m.group(1).upper()
-        typeobj = self.ischema_names[typename]
+        typeobj = self.ischema_names.get(typename)
         typeargs = []
         typekwargs = {}
         for arg_group in (2, 3):
@@ -291,6 +321,10 @@ class VerticaDialect(PGDialect):
 
         if any(tz_string in typename for tz_string in ('TIMEZONE', 'TIME ZONE', 'TIMESTAMPTZ')):
             typekwargs['timezone'] = True
+
+        if typeobj is None:
+            util.warn(f"Did not recognize type '{typename}' of column '{name}'")
+            typeobj, typeargs, typekwargs = sqltypes.NULLTYPE, [], {}
 
         if callable(typeobj):
             typeobj = typeobj(*typeargs, **typekwargs)
@@ -305,7 +339,7 @@ class VerticaDialect(PGDialect):
         if is_identity:
             column_info['autoincrement'] = True
         if sequence:
-            column_info['sequence'] = dict(sequence)
+            column_info['sequence'] = dict(sequence._mapping)
         return column_info
 
     @reflection.cache
@@ -317,9 +351,9 @@ class VerticaDialect(PGDialect):
              query += " AND table_schema = '" + schema + "'"
         query += " AND constraint_type = 'u'"
 
-        rs = connection.execute(text(query))
+        rs = connection.execute(text(query)).all()
 
-        unique_names = {row[1] for row in rs}
+        unique_names = sorted({row[1] for row in rs})
 
         result_dict = {unique: [] for unique in unique_names}
         for row in rs:
@@ -369,26 +403,29 @@ class VerticaDialect(PGDialect):
 
     @reflection.cache
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
-        query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.constraint_columns \n\
+        query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.primary_keys \n\
                  WHERE constraint_type = 'p' AND table_name = '" + table_name + "'"
 
         if schema is not None:
             query += " AND table_schema = '" + schema + "' \n"
 
-        cols = set()
+        # Key position lives in primary_keys, not constraint_columns.
+        query += " ORDER BY CAST(ordinal_position AS INTEGER)"
+
+        cols = []
         name = None
         for row in connection.execute(text(query)):
              name = row[1] if name is None else name
-             cols.add(row[2])
+             cols.append(row[2])
 
-        return {"constrained_columns": list(cols), "name": name}
+        return {"constrained_columns": cols, "name": name}
 
 
-    def get_foreign_keys(self, connection, table_name, schema, **kw):
+    def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         return []
 
 
-    def get_indexes(self, connection, table_name, schema, **kw):
+    def get_indexes(self, connection, table_name, schema=None, **kw):
         return []
 
 

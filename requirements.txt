@@ -2,5 +2,6 @@ nose
 coverage
 PyYAML # used by Makefile for running quality gem
 sqlalchemy # needed by tests
+boto3>=1.36,<2 # needed by immutable publisher tests
 wheel # needed by deploy job in CircleCI
 twine # needed by deploy job in CircleCI
