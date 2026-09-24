@@ -1,5 +1,5 @@
 import re
-from sqlalchemy import text, exc
+from sqlalchemy import text, exc, util
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.postgresql import INTERVAL
@@ -308,7 +308,7 @@ class VerticaDialect(PGDialect):
         if not m:
             raise ValueError("data type string not parseable for type name and optional parameters: %s" % data_type)
         typename = m.group(1).upper()
-        typeobj = self.ischema_names[typename]
+        typeobj = self.ischema_names.get(typename)
         typeargs = []
         typekwargs = {}
         for arg_group in (2, 3):
@@ -321,6 +321,10 @@ class VerticaDialect(PGDialect):
 
         if any(tz_string in typename for tz_string in ('TIMEZONE', 'TIME ZONE', 'TIMESTAMPTZ')):
             typekwargs['timezone'] = True
+
+        if typeobj is None:
+            util.warn(f"Did not recognize type '{typename}' of column '{name}'")
+            typeobj, typeargs, typekwargs = sqltypes.NULLTYPE, [], {}
 
         if callable(typeobj):
             typeobj = typeobj(*typeargs, **typekwargs)
@@ -349,7 +353,7 @@ class VerticaDialect(PGDialect):
 
         rs = connection.execute(text(query)).all()
 
-        unique_names = {row[1] for row in rs}
+        unique_names = sorted({row[1] for row in rs})
 
         result_dict = {unique: [] for unique in unique_names}
         for row in rs:
@@ -399,19 +403,22 @@ class VerticaDialect(PGDialect):
 
     @reflection.cache
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
-        query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.constraint_columns \n\
+        query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.primary_keys \n\
                  WHERE constraint_type = 'p' AND table_name = '" + table_name + "'"
 
         if schema is not None:
             query += " AND table_schema = '" + schema + "' \n"
 
-        cols = set()
+        # Key position lives in primary_keys, not constraint_columns.
+        query += " ORDER BY CAST(ordinal_position AS INTEGER)"
+
+        cols = []
         name = None
         for row in connection.execute(text(query)):
              name = row[1] if name is None else name
-             cols.add(row[2])
+             cols.append(row[2])
 
-        return {"constrained_columns": list(cols), "name": name}
+        return {"constrained_columns": cols, "name": name}
 
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):

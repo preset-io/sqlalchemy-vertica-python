@@ -111,6 +111,62 @@ def test_unique_constraint_columns_survive_result_consumption():
     ]
 
 
+@pytest.mark.parametrize('data_type, typename', [
+    ('geometry(1000)', 'GEOMETRY'), ('ARRAY[INT]', 'ARRAY'),
+])
+def test_unknown_column_type_warns_and_returns_nulltype(data_type, typename):
+    with pytest.warns(sa.exc.SAWarning, match=f"Did not recognize type '{typename}' of column 'g'"):
+        info = VerticaDialect()._get_column_info(
+            'g', data_type, True, '', False, False, None,
+        )
+    assert isinstance(info['type'], sa.types.NullType)
+    assert info == {
+        'name': 'g', 'type': sa.types.NULLTYPE, 'nullable': True,
+        'default': '', 'primary_key': False,
+    }
+
+
+@pytest.mark.parametrize('schema', [None, 's'])
+def test_primary_key_query_orders_by_key_position(schema):
+    connection = Mock()
+    connection.execute.return_value = iter([])
+    assert VerticaDialect().get_pk_constraint(connection, 't', schema=schema) == {
+        'constrained_columns': [], 'name': None,
+    }
+    statement = connection.execute.call_args.args[0]
+    assert isinstance(statement, TextClause)
+    query = ' '.join(str(statement).lower().split())
+    # constraint_columns has no ordinal_position; primary_keys has key order,
+    # documented as VARCHAR, so sort numerically (including positions >= 10).
+    assert 'from v_catalog.primary_keys' in query
+    assert query.endswith('order by cast(ordinal_position as integer)')
+    assert "constraint_type = 'p'" in query
+    assert "table_name = 't'" in query
+    assert ("table_schema = 's'" in query) == (schema is not None)
+
+
+def test_primary_key_preserves_declared_column_order():
+    columns = ['order_id', 'customer_id', 'event_date', 'region_code', 'product_sku']
+    connection = Mock()
+    connection.execute.return_value = iter((1, 'pk_orders', column) for column in columns)
+    assert VerticaDialect().get_pk_constraint(connection, 'orders', schema='s') == {
+        'constrained_columns': columns, 'name': 'pk_orders',
+    }
+
+
+@pytest.mark.parametrize('names', [
+    ['uq_z', 'uq_a', 'uq_m'], ['uq_m', 'uq_z', 'uq_a'],
+])
+def test_unique_constraints_have_deterministic_names_and_preserve_columns(names):
+    connection = Mock()
+    connection.execute.return_value.all.return_value = [
+        (index, name, column) for column in ['z', 'a'] for index, name in enumerate(names)
+    ]
+    assert VerticaDialect().get_unique_constraints(connection, 't', schema='s') == [
+        {'name': name, 'column_names': ['z', 'a']} for name in sorted(names)
+    ]
+
+
 def test_identity_sequence_uses_sqlalchemy2_row_mapping():
     with sa.create_engine('sqlite://').connect() as conn:
         row = conn.execute(sa.text("SELECT 'seq' AS name, 1 AS start, 1 AS increment")).one()
