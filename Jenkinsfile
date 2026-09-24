@@ -43,7 +43,8 @@ assert sum(line.startswith('__version__ = ') for line in lines) == 1
 path.write_text(''.join('__version__ = ' + repr(os.environ['PUBLISH_VERSION']) + '\\n'
                         if line.startswith('__version__ = ') else line for line in lines))
 PY
-                        export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+                        SOURCE_DATE_EPOCH=$(git -c safe.directory="$PWD" log -1 --pretty=%ct)
+                        export SOURCE_DATE_EPOCH
                         .venv/bin/python -m build --wheel
                         .venv/bin/pip install --force-reinstall --no-deps dist/*.whl
                         .venv/bin/python - <<'PY'
