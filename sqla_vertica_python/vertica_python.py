@@ -213,22 +213,26 @@ class VerticaDialect(PGDialect):
     @reflection.cache
     def get_table_names(self, connection, schema=None, **kw):
         s = ["SELECT table_name FROM v_catalog.tables"]
+        params = {}
         if schema is not None:
-            s.append("WHERE table_schema = '%s'" % (schema,))
+            s.append("WHERE table_schema = :schema")
+            params["schema"] = schema
         s.append("ORDER BY table_schema, table_name")
 
-        rs = connection.execute(text(' '.join(s)))
+        rs = connection.execute(text(' '.join(s)), params)
         return [row[0] for row in rs]
 
 
     @reflection.cache
     def get_view_names(self, connection, schema=None, **kw):
         s = ["SELECT table_name FROM v_catalog.views"]
+        params = {}
         if schema is not None:
-            s.append("WHERE table_schema = '%s'" % (schema,))
+            s.append("WHERE table_schema = :schema")
+            params["schema"] = schema
         s.append("ORDER BY table_schema, table_name")
 
-        rs = connection.execute(text(' '.join(s)))
+        rs = connection.execute(text(' '.join(s)), params)
         return [row[0] for row in rs]
 
     @reflection.cache

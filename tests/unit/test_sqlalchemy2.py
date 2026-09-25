@@ -173,3 +173,41 @@ def test_identity_sequence_uses_sqlalchemy2_row_mapping():
     info = VerticaDialect()._get_column_info('id', 'int', False, '', True, True, row)
     assert info['sequence'] == {'name': 'seq', 'start': 1, 'increment': 1}
     assert info['autoincrement'] is True
+
+
+ENUMERATION_METHODS = ('get_table_names', 'get_view_names')
+
+
+def _capture_execute(connection):
+    captured = {}
+
+    def execute(statement, params=None, *args, **kwargs):
+        captured['statement'] = statement
+        captured['params'] = params
+        return iter(())
+
+    connection.execute.side_effect = execute
+    return captured
+
+
+@pytest.mark.parametrize('method', ENUMERATION_METHODS)
+def test_enumeration_passes_schema_as_bound_parameter(method):
+    connection = Mock()
+    captured = _capture_execute(connection)
+    # A schema name that includes a quote character must be carried as a value,
+    # never merged into the SQL text.
+    schema = "abc'def"
+    getattr(VerticaDialect(), method)(connection, schema=schema)
+    rendered = str(captured['statement'])
+    assert ':schema' in rendered
+    assert "'" not in rendered
+    assert captured['params'] == {'schema': schema}
+
+
+@pytest.mark.parametrize('method', ENUMERATION_METHODS)
+def test_enumeration_without_schema_emits_no_filter(method):
+    connection = Mock()
+    captured = _capture_execute(connection)
+    getattr(VerticaDialect(), method)(connection, schema=None)
+    assert 'WHERE' not in str(captured['statement']).upper()
+    assert captured['params'] == {}
