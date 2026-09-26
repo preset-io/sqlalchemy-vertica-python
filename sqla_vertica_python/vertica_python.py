@@ -168,9 +168,11 @@ class VerticaDialect(PGDialect):
 
 
     def has_type(self, connection, type_name, schema=None):
+        # v_catalog.types stores mixed-case names (e.g. 'Integer', 'Varchar'),
+        # so compare case-insensitively.
         query = ("SELECT EXISTS ("
                  "SELECT type_name FROM v_catalog.types "
-                 "WHERE type_name = :type_name"
+                 "WHERE LOWER(type_name) = LOWER(:type_name)"
                  ")")
         rs = connection.execute(text(query), {"type_name": type_name})
         return bool(rs.scalar())

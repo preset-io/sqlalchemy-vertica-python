@@ -324,3 +324,15 @@ def test_catalog_without_schema_binds_only_what_is_used(method):
         assert "tab'le" not in sql
         placeholders = set(re.findall(r'(?<!:):(\w+)', sql))
         assert placeholders == set(params or {})
+
+
+@pytest.mark.parametrize('type_name', ['integer', 'INTEGER', 'Integer'])
+def test_has_type_matches_catalog_names_case_insensitively(type_name):
+    # v_catalog.types stores names such as 'Integer'; emulate its comparison.
+    with sa.create_engine('sqlite://').connect() as conn:
+        conn.execute(sa.text('ATTACH DATABASE ":memory:" AS v_catalog'))
+        conn.execute(sa.text('CREATE TABLE v_catalog.types (type_name TEXT)'))
+        conn.execute(sa.text("INSERT INTO v_catalog.types VALUES ('Integer'), ('Varchar')"))
+        dialect = VerticaDialect()
+        assert dialect.has_type(conn, type_name) is True
+        assert dialect.has_type(conn, 'no_such_type') is False
