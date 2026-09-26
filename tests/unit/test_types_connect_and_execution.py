@@ -254,3 +254,9 @@ def test_connect_normalizes_url_and_connect_args():
 ])
 def test_ddl_uses_types_vertica_has(type_, ddl):
     assert type_.compile(dialect=VerticaDialect()) == ddl
+
+
+def test_has_schema_accepts_inspector_keywords():
+    connection = Mock()
+    connection.execute.return_value.scalar.return_value = True
+    assert VerticaDialect().has_schema(connection, 's', info_cache={}) is True

@@ -391,11 +391,29 @@ class VerticaDialect(PGDialect):
             for binary_type in _BINARY_TYPES:
                 register(binary_type, _binary_literal)
 
+    @staticmethod
+    def _unescape_percents(statement, parameters, context):
+        # With the positional "format" paramstyle SQLAlchemy doubles every
+        # literal % in SQL it compiles, expecting the driver's %-formatting to
+        # collapse %% back to %. vertica-python formats only when parameters
+        # are bound, so without them %% would reach the server. Raw SQL from
+        # exec_driver_sql is not escaped by SQLAlchemy and is left untouched.
+        if parameters or context is None or context.compiled is None:
+            return statement
+        return statement.replace('%%', '%')
+
     def do_execute(self, cursor, statement, parameters, context=None):
         # vertica-python decodes bytes parameters as UTF-8 text; bind them as
         # hexadecimal VARBINARY literals instead.
         self._register_binary_adapters(cursor)
-        cursor.execute(statement, parameters)
+        statement = self._unescape_percents(statement, parameters, context)
+        if parameters:
+            cursor.execute(statement, parameters)
+        else:
+            cursor.execute(statement)
+
+    def do_execute_no_params(self, cursor, statement, context=None):
+        cursor.execute(self._unescape_percents(statement, None, context))
 
     def do_executemany(self, cursor, statement, parameters, context=None):
         rows = list(parameters)
@@ -431,7 +449,8 @@ class VerticaDialect(PGDialect):
         return [[], opts]
 
 
-    def has_schema(self, connection, schema):
+    @reflection.cache
+    def has_schema(self, connection, schema, **kw):
         query = ("SELECT EXISTS (SELECT schema_name FROM v_catalog.schemata "
                  "WHERE schema_name = :schema)")
         rs = connection.execute(text(query), {"schema": schema})
