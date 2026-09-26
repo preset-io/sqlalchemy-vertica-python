@@ -1,13 +1,24 @@
 """Exercise the same immutable publisher used by Jenkins without AWS access."""
 import hashlib
 import io
+import os
 from pathlib import Path
 import runpy
 from unittest.mock import Mock
 from zipfile import ZipFile, ZipInfo
 
-from botocore.exceptions import ClientError
 import pytest
+
+try:
+    from botocore.exceptions import ClientError
+except ModuleNotFoundError:  # pragma: no cover - depends on the environment
+    # The publisher tests need boto3 (listed in requirements.txt and installed
+    # by the Jenkins job). Without it, skip this module visibly instead of
+    # aborting collection of every other unit test; CI must never skip it.
+    if any(os.environ.get(name) for name in ('CI', 'JENKINS_URL', 'BUILD_NUMBER')):
+        raise
+    pytest.skip("publisher tests require boto3: pip install 'boto3>=1.36,<2'",
+                allow_module_level=True)
 
 publisher = runpy.run_path(
     str(Path(__file__).resolve().parents[2] / 'ci' / 'publish_wheel.py')
