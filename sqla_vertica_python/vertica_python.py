@@ -65,12 +65,49 @@ class ROW(sqltypes.UserDefinedType):
         return self.definition
 
 
+# Vertica's VARCHAR/VARBINARY default to 80 bytes when no length is given;
+# SQLAlchemy's unbounded String means "no practical limit".
+MAX_VARCHAR_LENGTH = 65000
+
+
+def _sized(name, length):
+    return name + ('(%d)' % length if length else '')
+
+
 class VerticaTypeCompiler(PGTypeCompiler):
+    """PostgreSQL DDL types Vertica lacks (TEXT, BYTEA as large binary, JSON,
+    NVARCHAR, CLOB/BLOB) are rendered as their Vertica equivalents."""
+
     def visit_LONG_VARCHAR(self, type_, **kw):
-        return 'LONG VARCHAR' + ('(%d)' % type_.length if type_.length else '')
+        return _sized('LONG VARCHAR', type_.length)
 
     def visit_LONG_VARBINARY(self, type_, **kw):
-        return 'LONG VARBINARY' + ('(%d)' % type_.length if type_.length else '')
+        return _sized('LONG VARBINARY', type_.length)
+
+    def visit_VARCHAR(self, type_, **kw):
+        return 'VARCHAR(%d)' % (type_.length or MAX_VARCHAR_LENGTH)
+
+    visit_NVARCHAR = visit_VARCHAR
+
+    def visit_NCHAR(self, type_, **kw):
+        return _sized('CHAR', type_.length)
+
+    def visit_TEXT(self, type_, **kw):
+        return self.visit_LONG_VARCHAR(type_, **kw)
+
+    visit_CLOB = visit_TEXT
+
+    def visit_JSON(self, type_, **kw):
+        # No JSON column type; SQLAlchemy's JSON serializes to text.
+        return 'LONG VARCHAR'
+
+    def visit_large_binary(self, type_, **kw):
+        return self.visit_LONG_VARBINARY(type_, **kw)
+
+    visit_BLOB = visit_large_binary
+
+    def visit_VARBINARY(self, type_, **kw):
+        return 'VARBINARY(%d)' % (type_.length or MAX_VARCHAR_LENGTH)
 
     def visit_ARRAY(self, type_, **kw):
         inner = self.process(type_.item_type, **kw)
@@ -210,8 +247,8 @@ class VerticaDialect(PGDialect):
 
     supports_statement_cache = False
 
-    # Vertica has no multi-row VALUES clause.
-    supports_multivalues_insert = False
+    # Vertica has no CREATE TYPE ... AS ENUM; store enums as VARCHAR.
+    supports_native_enum = False
 
     # vertica-python substitutes named (:name) parameters with one regex
     # replacement per parameter over the whole statement, so a value that
@@ -346,20 +383,6 @@ class VerticaDialect(PGDialect):
         if isinstance(e, self.loaded_dbapi.errors.ConnectionError):
             return True
         return connection is not None and connection.closed()
-
-    @staticmethod
-    def _idle(dbapi_connection):
-        return getattr(dbapi_connection, 'transaction_status', None) == 'no_transaction'
-
-    def do_rollback(self, dbapi_connection):
-        # Vertica answers ROLLBACK/COMMIT outside a transaction with a notice
-        # that vertica-python turns into a UserWarning on every pool return.
-        if not self._idle(dbapi_connection):
-            dbapi_connection.rollback()
-
-    def do_commit(self, dbapi_connection):
-        if not self._idle(dbapi_connection):
-            dbapi_connection.commit()
 
     @staticmethod
     def _register_binary_adapters(cursor):

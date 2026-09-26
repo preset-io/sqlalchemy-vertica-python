@@ -66,6 +66,10 @@ Reflection and execution behaviour:
   ``:other`` would be rewritten by the next substitution. ``bytes`` values are
   sent as ``X'..'`` literals. ``executemany`` uses the driver's COPY rewrite only
   for INSERTs whose VALUES are plain placeholders without binary values.
+* DDL uses Vertica types: ``Text``/``CLOB``/``JSON`` become ``LONG VARCHAR``,
+  ``LargeBinary``/``BLOB`` ``LONG VARBINARY``, unbounded ``String`` and
+  ``VARBINARY`` get Vertica's 65000-byte maximum instead of its 80-byte
+  default, and ``Enum`` is stored as ``VARCHAR``.
 * ``isolation_level`` (including ``AUTOCOMMIT``) is supported, and a lost
   connection (for example after ``CLOSE_SESSION``) is treated as a disconnect, so
   ``pool_pre_ping`` replaces it.

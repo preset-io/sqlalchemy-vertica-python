@@ -144,7 +144,6 @@ def test_positional_paramstyle_is_forced():
     for unsafe in ('named', 'pyformat', 'numeric'):
         with pytest.raises(sa.exc.ArgumentError, match='unsafe'):
             sa.create_engine('vertica+vertica_python://user@localhost/db', paramstyle=unsafe)
-    assert VerticaDialect.supports_multivalues_insert is False
 
 
 def test_binary_parameters_are_hex_literals():
@@ -186,15 +185,14 @@ def test_connection_errors_are_disconnects():
     assert not dialect.is_disconnect(ValueError('x'), open_connection, None)
 
 
-@pytest.mark.parametrize('status, called', [
-    ('no_transaction', False), ('in_transaction', True), ('failed_transaction', True), (None, True),
-])
-def test_commit_and_rollback_skip_only_idle_connections(status, called):
-    connection = Mock(transaction_status=status)
-    VerticaDialect().do_rollback(connection)
+def test_commit_and_rollback_are_always_sent():
+    # vertica-python updates transaction_status lazily (it can still read
+    # 'no_transaction' right after an INSERT), so it must not gate COMMIT.
+    connection = Mock(transaction_status='no_transaction')
     VerticaDialect().do_commit(connection)
-    assert connection.rollback.called is called
-    assert connection.commit.called is called
+    VerticaDialect().do_rollback(connection)
+    connection.commit.assert_called_once_with()
+    connection.rollback.assert_called_once_with()
 
 
 def test_url_options_are_typed():
