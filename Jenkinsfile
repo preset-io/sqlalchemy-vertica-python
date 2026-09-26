@@ -17,10 +17,12 @@ podTemplate(
             returnStdout: true).trim()
         boolean isMaster = env.BRANCH_NAME == 'master'
         boolean isPR = env.CHANGE_ID != null
-        if (!isMaster && !isPR) {
-            error('Only master and pull-request builds publish; use a PR.')
-        }
-        def version = isMaster ? baseVersion : "${baseVersion}+pr.${env.CHANGE_ID}.${revision.take(12)}"
+        // Plain branch builds (the branch job that runs alongside a PR's
+        // pr-head job) run the same tests and wheel build but never publish.
+        boolean publish = isMaster || isPR
+        def version = isMaster ? baseVersion
+            : isPR ? "${baseVersion}+pr.${env.CHANGE_ID}.${revision.take(12)}"
+            : "${baseVersion}+branch.${revision.take(12)}"
         def wheel = "sqlalchemy_vertica_python-${version}-py3-none-any.whl"
         def key = "sqlalchemy-vertica-python/${wheel}"
 
@@ -65,6 +67,11 @@ PY
                     '''
                 }
             }
+        }
+        if (!publish) {
+            echo 'Branch build verified; only master and pull-request builds publish.'
+            archiveArtifacts artifacts: 'dist/*.whl', fingerprint: true
+            return
         }
         container('ci') {
             stage('Publish immutable wheel') {
