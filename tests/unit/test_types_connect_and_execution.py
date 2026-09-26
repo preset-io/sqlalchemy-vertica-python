@@ -236,3 +236,21 @@ def test_connect_normalizes_url_and_connect_args():
     dialect.loaded_dbapi = Mock()
     dialect.connect(host='h', ssl='0', tlsmode='disable')
     dialect.loaded_dbapi.connect.assert_called_once_with(host='h', ssl=False, tlsmode='disable')
+
+
+@pytest.mark.parametrize('type_, ddl', [
+    (sa.Text(), 'LONG VARCHAR'),
+    (sa.UnicodeText(), 'LONG VARCHAR'),
+    (sa.CLOB(), 'LONG VARCHAR'),
+    (sa.JSON(), 'LONG VARCHAR'),
+    (sa.String(), 'VARCHAR(65000)'),
+    (sa.String(10), 'VARCHAR(10)'),
+    (sa.NVARCHAR(5), 'VARCHAR(5)'),
+    (sa.NCHAR(3), 'CHAR(3)'),
+    (sa.LargeBinary(), 'LONG VARBINARY'),
+    (sa.BLOB(), 'LONG VARBINARY'),
+    (sa.VARBINARY(), 'VARBINARY(65000)'),
+    (sa.Enum('a', 'bb', name='e'), 'VARCHAR(2)'),
+])
+def test_ddl_uses_types_vertica_has(type_, ddl):
+    assert type_.compile(dialect=VerticaDialect()) == ddl
