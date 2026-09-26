@@ -135,8 +135,8 @@ class VerticaDialect(PGDialect):
 
     def has_schema(self, connection, schema):
         query = ("SELECT EXISTS (SELECT schema_name FROM v_catalog.schemata "
-                 "WHERE schema_name='%s')") % (schema)
-        rs = connection.execute(text(query))
+                 "WHERE schema_name = :schema)")
+        rs = connection.execute(text(query), {"schema": schema})
         return bool(rs.scalar())
 
 
@@ -146,10 +146,11 @@ class VerticaDialect(PGDialect):
             schema = self._get_default_schema_name(connection)
         query = ("SELECT EXISTS ("
                  "SELECT table_name FROM v_catalog.all_tables "
-                 "WHERE schema_name='%s' AND "
-                 "table_name='%s'"
-                 ")") % (schema, table_name)
-        rs = connection.execute(text(query))
+                 "WHERE schema_name = :schema AND "
+                 "table_name = :table_name"
+                 ")")
+        rs = connection.execute(
+            text(query), {"schema": schema, "table_name": table_name})
         return bool(rs.scalar())
 
 
@@ -158,19 +159,20 @@ class VerticaDialect(PGDialect):
             schema = self._get_default_schema_name(connection)
         query = ("SELECT EXISTS ("
                  "SELECT sequence_name FROM v_catalog.sequences "
-                 "WHERE sequence_schema='%s' AND "
-                 "sequence_name='%s'"
-                 ")") % (schema, sequence_name)
-        rs = connection.execute(text(query))
+                 "WHERE sequence_schema = :schema AND "
+                 "sequence_name = :sequence_name"
+                 ")")
+        rs = connection.execute(
+            text(query), {"schema": schema, "sequence_name": sequence_name})
         return bool(rs.scalar())
 
 
     def has_type(self, connection, type_name, schema=None):
         query = ("SELECT EXISTS ("
                  "SELECT type_name FROM v_catalog.types "
-                 "WHERE type_name='%s'"
-                 ")") % (type_name)
-        rs = connection.execute(text(query))
+                 "WHERE type_name = :type_name"
+                 ")")
+        rs = connection.execute(text(query), {"type_name": type_name})
         return bool(rs.scalar())
 
 
@@ -199,14 +201,15 @@ class VerticaDialect(PGDialect):
 
     @reflection.cache
     def get_table_comment(self, connection, table_name, schema=None, **kw):
-        schema_conditional = (
-            "" if schema is None else "AND object_schema = '{schema}'".format(schema=schema))
+        params = {"table_name": table_name}
         query = """
         SELECT comment FROM v_catalog.comments WHERE object_type = 'TABLE'
-        AND object_name = '{table_name}'
-        {schema_conditional}
-        """.format(table_name=table_name, schema_conditional=schema_conditional)
-        rs = connection.execute(text(query))
+        AND object_name = :table_name
+        """
+        if schema is not None:
+            query += "AND object_schema = :schema\n"
+            params["schema"] = schema
+        rs = connection.execute(text(query), params)
         return {"text": rs.scalar()}
 
 
@@ -237,16 +240,21 @@ class VerticaDialect(PGDialect):
 
     @reflection.cache
     def get_columns(self, connection, table_name, schema=None, **kw):
-        schema_conditional = (
-            "" if schema is None else "AND table_schema = '{schema}'".format(schema=schema))
+        params = {"table_name": table_name}
+        schema_conditional = ""
+        if schema is not None:
+            schema_conditional = "AND table_schema = :schema"
+            params["schema"] = schema
 
+        # Only fixed SQL fragments are formatted in; names travel as parameters.
         pk_column_select = """
         SELECT column_name FROM v_catalog.primary_keys
-        WHERE table_name = '{table_name}'
+        WHERE table_name = :table_name
         AND constraint_type = 'p'
         {schema_conditional}
-        """.format(table_name=table_name, schema_conditional=schema_conditional)
-        primary_key_columns = tuple(row[0] for row in connection.execute(text(pk_column_select)))
+        """.format(schema_conditional=schema_conditional)
+        primary_key_columns = tuple(
+            row[0] for row in connection.execute(text(pk_column_select), params))
         column_select = """
         SELECT
           column_name,
@@ -256,7 +264,7 @@ class VerticaDialect(PGDialect):
           is_identity,
           ordinal_position
         FROM v_catalog.columns
-        where table_name = '{table_name}'
+        where table_name = :table_name
         {schema_conditional}
         UNION
         SELECT
@@ -267,12 +275,12 @@ class VerticaDialect(PGDialect):
           false as is_identity,
           ordinal_position
         FROM v_catalog.view_columns
-        where table_name = '{table_name}'
+        where table_name = :table_name
         {schema_conditional}
         ORDER BY ordinal_position ASC
-        """.format(table_name=table_name, schema_conditional=schema_conditional)
+        """.format(schema_conditional=schema_conditional)
         colobjs = []
-        column_select_results = list(connection.execute(text(column_select)))
+        column_select_results = list(connection.execute(text(column_select), params))
         if not column_select_results and not self.has_table(
                 connection, table_name, schema=schema, **kw):
             raise exc.NoSuchTableError(table_name)
@@ -283,16 +291,15 @@ class VerticaDialect(PGDialect):
                 minimum as start,
                 increment_by as increment
                 FROM v_catalog.sequences
-                WHERE identity_table_name = '{table_name}'
+                WHERE identity_table_name = :table_name
                 {schema_conditional}
                 """.format(
-                    table_name=table_name,
                     schema_conditional=(
                         "" if schema is None
-                        else "AND sequence_schema = '{schema}'".format(schema=schema)
+                        else "AND sequence_schema = :schema"
                     )
                 )
-            )).first() if row.is_identity else None
+            ), params).first() if row.is_identity else None
 
             colobj = self._get_column_info(
                 row.column_name,
@@ -350,12 +357,14 @@ class VerticaDialect(PGDialect):
     def get_unique_constraints(self, connection, table_name, schema=None, **kw):
 
         query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.constraint_columns \n\
-                 WHERE table_name = '" + table_name + "'"
+                 WHERE table_name = :table_name"
+        params = {"table_name": table_name}
         if schema is not None:
-             query += " AND table_schema = '" + schema + "'"
+             query += " AND table_schema = :schema"
+             params["schema"] = schema
         query += " AND constraint_type = 'u'"
 
-        rs = connection.execute(text(query)).all()
+        rs = connection.execute(text(query), params).all()
 
         unique_names = sorted({row[1] for row in rs})
 
@@ -389,17 +398,20 @@ class VerticaDialect(PGDialect):
                 FROM
                     v_catalog.tables i
                 WHERE
-                    i.table_name='{table_name}'
+                    i.table_name = :table_name
                 {schema_clause}
             )
-        """.format(table_name=table_name, schema_clause=(
-            "" if schema is None else "AND i.table_schema ='{schema}'".format(schema=schema)))
+        """.format(schema_clause=(
+            "" if schema is None else "AND i.table_schema = :schema"))
+        params = {"table_name": table_name}
+        if schema is not None:
+            params["schema"] = schema
 
         return [
             {
                 'name': name,
                 'sqltext': src[1:-1]
-            } for name, src in connection.execute(text(query)).fetchall()
+            } for name, src in connection.execute(text(query), params).fetchall()
         ]
 
     # constraints are enforced on selects, but returning nothing for these
@@ -408,17 +420,19 @@ class VerticaDialect(PGDialect):
     @reflection.cache
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         query = "SELECT constraint_id, constraint_name, column_name FROM v_catalog.primary_keys \n\
-                 WHERE constraint_type = 'p' AND table_name = '" + table_name + "'"
+                 WHERE constraint_type = 'p' AND table_name = :table_name"
+        params = {"table_name": table_name}
 
         if schema is not None:
-            query += " AND table_schema = '" + schema + "' \n"
+            query += " AND table_schema = :schema \n"
+            params["schema"] = schema
 
         # Key position lives in primary_keys, not constraint_columns.
         query += " ORDER BY CAST(ordinal_position AS INTEGER)"
 
         cols = []
         name = None
-        for row in connection.execute(text(query)):
+        for row in connection.execute(text(query), params):
              name = row[1] if name is None else name
              cols.append(row[2])
 
