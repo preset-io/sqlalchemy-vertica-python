@@ -6,7 +6,7 @@ import os.path
 import sys
 
 
-__version__ = '0.6.3.3'
+__version__ = '0.6.3.4'
 
 
 # From https://circleci.com/blog/continuously-deploying-python-packages-to-pypi-with-circleci/
@@ -104,7 +104,7 @@ setup(
     """,
     install_requires=[
         'sqlalchemy>=2.0,<2.1',
-        'vertica_python>=0.10.2'
+        'vertica_python>=1.4.0,<2'
     ],
     cmdclass={
         'coverage_ratchet': TestCoverageRatchetCommand,

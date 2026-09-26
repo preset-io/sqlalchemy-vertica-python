@@ -105,25 +105,21 @@ def test_missing_columns_raise_no_such_table():
 def test_unique_constraint_columns_survive_result_consumption():
     connection = Mock()
     connection.execute.return_value.all.return_value = [
-        (1, 'uq_pair', 'a'), (1, 'uq_pair', 'b'),
+        ('uq_pair', 'a'), ('uq_pair', 'b'),
     ]
     assert VerticaDialect().get_unique_constraints(connection, 't', schema='s') == [
         {'name': 'uq_pair', 'column_names': ['a', 'b']},
     ]
 
 
-@pytest.mark.parametrize('data_type, typename', [
-    ('geometry(1000)', 'GEOMETRY'), ('ARRAY[INT]', 'ARRAY'),
-])
-def test_unknown_column_type_warns_and_returns_nulltype(data_type, typename):
-    with pytest.warns(sa.exc.SAWarning, match=f"Did not recognize type '{typename}' of column 'g'"):
+def test_unknown_column_type_warns_and_returns_nulltype():
+    with pytest.warns(sa.exc.SAWarning, match="Did not recognize type 'MYSTERY' of column 'g'"):
         info = VerticaDialect()._get_column_info(
-            'g', data_type, True, '', False, False, None,
+            'g', 'mystery(10)', True, None, False, False, None,
         )
-    assert isinstance(info['type'], sa.types.NullType)
     assert info == {
         'name': 'g', 'type': sa.types.NULLTYPE, 'nullable': True,
-        'default': '', 'primary_key': False,
+        'default': None, 'primary_key': False,
     }
 
 
@@ -131,6 +127,7 @@ def test_unknown_column_type_warns_and_returns_nulltype(data_type, typename):
 def test_primary_key_query_orders_by_key_position(schema):
     connection = Mock()
     connection.execute.return_value = iter([])
+    connection.scalar.return_value = 'public'
     assert VerticaDialect().get_pk_constraint(connection, 't', schema=schema) == {
         'constrained_columns': [], 'name': None,
     }
@@ -143,9 +140,10 @@ def test_primary_key_query_orders_by_key_position(schema):
     assert query.endswith('order by cast(ordinal_position as integer)')
     assert "constraint_type = 'p'" in query
     assert 'table_name = :table_name' in query
-    assert ('table_schema = :schema' in query) == (schema is not None)
-    expected = {'table_name': 't'} if schema is None else {'table_name': 't', 'schema': 's'}
-    assert connection.execute.call_args.args[1] == expected
+    assert 'table_schema = :schema' in query
+    # schema=None means the default schema, not every schema.
+    assert connection.execute.call_args.args[1] == {
+        'table_name': 't', 'schema': 'public' if schema is None else 's'}
 
 
 def test_primary_key_preserves_declared_column_order():
@@ -157,17 +155,20 @@ def test_primary_key_preserves_declared_column_order():
     }
 
 
-@pytest.mark.parametrize('names', [
-    ['uq_z', 'uq_a', 'uq_m'], ['uq_m', 'uq_z', 'uq_a'],
-])
-def test_unique_constraints_have_deterministic_names_and_preserve_columns(names):
+def test_unique_constraints_are_ordered_by_the_catalog_query():
+    # The catalog stores no key position for UNIQUE constraints; the query
+    # orders by constraint name and then by column position in the table.
     connection = Mock()
     connection.execute.return_value.all.return_value = [
-        (index, name, column) for column in ['z', 'a'] for index, name in enumerate(names)
+        ('uq_a', 'x'), ('uq_a', 'y'), ('uq_z', 'b'), ('uq_z', 'a'),
     ]
-    assert VerticaDialect().get_unique_constraints(connection, 't', schema='s') == [
-        {'name': name, 'column_names': ['z', 'a']} for name in sorted(names)
+    result = VerticaDialect().get_unique_constraints(connection, 't', schema='s')
+    assert result == [
+        {'name': 'uq_a', 'column_names': ['x', 'y']},
+        {'name': 'uq_z', 'column_names': ['b', 'a']},
     ]
+    query = ' '.join(str(connection.execute.call_args.args[0]).lower().split())
+    assert query.endswith('order by cc.constraint_name, c.ordinal_position')
 
 
 def test_identity_sequence_uses_sqlalchemy2_row_mapping():
@@ -208,12 +209,13 @@ def test_enumeration_passes_schema_as_bound_parameter(method):
 
 
 @pytest.mark.parametrize('method', ENUMERATION_METHODS)
-def test_enumeration_without_schema_emits_no_filter(method):
+def test_enumeration_without_schema_uses_the_default_schema(method):
     connection = Mock()
     captured = _capture_execute(connection)
+    connection.scalar.return_value = 'public'
     getattr(VerticaDialect(), method)(connection, schema=None)
-    assert 'WHERE' not in str(captured['statement']).upper()
-    assert captured['params'] == {}
+    assert ':schema' in str(captured['statement'])
+    assert captured['params'] == {'schema': 'public'}
 
 
 class _CatalogResult:
@@ -252,7 +254,7 @@ def _record_catalog_queries(connection, rows_for=lambda sql: ()):
 
 def _identity_column_rows(sql):
     # One identity column, so get_columns also runs its sequence lookup.
-    if 'v_catalog.columns' in sql:
+    if 'v_catalog.columns' in sql and 'constraint_columns' not in sql:
         row = Mock(column_name='id', data_type='int', column_default='',
                    is_nullable=False, is_identity=True)
         return [row]

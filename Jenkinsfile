@@ -30,7 +30,7 @@ podTemplate(
                     sh '''
                         set -eu
                         python -m venv .venv
-                        .venv/bin/pip install 'sqlalchemy==2.0.52' 'vertica-python==0.10.2' pytest 'boto3>=1.36,<2' \
+                        .venv/bin/pip install 'sqlalchemy==2.0.52' 'vertica-python==1.4.0' pytest 'boto3>=1.36,<2' \
                             'build==1.4.4' 'setuptools==80.9.0' 'wheel==0.45.1'
                         .venv/bin/pip install --no-deps .
                         .venv/bin/python -m pytest -q tests/unit
