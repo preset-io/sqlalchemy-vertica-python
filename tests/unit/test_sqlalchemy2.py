@@ -1,4 +1,5 @@
 """SQLAlchemy 2 regressions: no PostgreSQL catalog may leak into reflection."""
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -141,8 +142,10 @@ def test_primary_key_query_orders_by_key_position(schema):
     assert 'from v_catalog.primary_keys' in query
     assert query.endswith('order by cast(ordinal_position as integer)')
     assert "constraint_type = 'p'" in query
-    assert "table_name = 't'" in query
-    assert ("table_schema = 's'" in query) == (schema is not None)
+    assert 'table_name = :table_name' in query
+    assert ('table_schema = :schema' in query) == (schema is not None)
+    expected = {'table_name': 't'} if schema is None else {'table_name': 't', 'schema': 's'}
+    assert connection.execute.call_args.args[1] == expected
 
 
 def test_primary_key_preserves_declared_column_order():
@@ -211,3 +214,125 @@ def test_enumeration_without_schema_emits_no_filter(method):
     getattr(VerticaDialect(), method)(connection, schema=None)
     assert 'WHERE' not in str(captured['statement']).upper()
     assert captured['params'] == {}
+
+
+class _CatalogResult:
+    """Minimal result object for the catalog queries issued by the dialect."""
+
+    def __init__(self, rows=()):
+        self._rows = list(rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def all(self):
+        return list(self._rows)
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def scalar(self):
+        return True
+
+
+def _record_catalog_queries(connection, rows_for=lambda sql: ()):
+    calls = []
+
+    def execute(statement, params=None, *args, **kwargs):
+        calls.append((' '.join(str(statement).split()), params))
+        return _CatalogResult(rows_for(str(statement)))
+
+    connection.execute.side_effect = execute
+    connection.scalar.return_value = 'public'
+    return calls
+
+
+def _identity_column_rows(sql):
+    # One identity column, so get_columns also runs its sequence lookup.
+    if 'v_catalog.columns' in sql:
+        row = Mock(column_name='id', data_type='int', column_default='',
+                   is_nullable=False, is_identity=True)
+        return [row]
+    return []
+
+
+CATALOG_CALLS = {
+    'has_schema': lambda d, c, schema, name: d.has_schema(c, schema),
+    'has_table': lambda d, c, schema, name: d.has_table(c, name, schema=schema),
+    'has_sequence': lambda d, c, schema, name: d.has_sequence(c, name, schema=schema),
+    'has_type': lambda d, c, schema, name: d.has_type(c, name, schema=schema),
+    'get_table_comment': lambda d, c, schema, name: d.get_table_comment(c, name, schema=schema),
+    'get_columns': lambda d, c, schema, name: d.get_columns(c, name, schema=schema),
+    'get_unique_constraints':
+        lambda d, c, schema, name: d.get_unique_constraints(c, name, schema=schema),
+    'get_check_constraints':
+        lambda d, c, schema, name: d.get_check_constraints(c, name, schema=schema),
+    'get_pk_constraint': lambda d, c, schema, name: d.get_pk_constraint(c, name, schema=schema),
+    'get_table_names': lambda d, c, schema, name: d.get_table_names(c, schema=schema),
+    'get_view_names': lambda d, c, schema, name: d.get_view_names(c, schema=schema),
+}
+
+UNUSUAL_NAMES = [
+    ("abc'def", "tab'le"),
+    ("it''s", "O'Brien's table"),
+    ('dou"ble', 'back\\slash'),
+    ('%(schema)s', 'name:with:colons'),
+]
+
+
+def _catalog_queries(method, schema, name):
+    connection = Mock()
+    calls = _record_catalog_queries(connection, _identity_column_rows)
+    CATALOG_CALLS[method](VerticaDialect(), connection, schema, name)
+    return calls
+
+
+@pytest.mark.parametrize('method', sorted(CATALOG_CALLS))
+@pytest.mark.parametrize('schema, name', UNUSUAL_NAMES)
+def test_names_containing_quotes_do_not_change_the_query(method, schema, name):
+    baseline = _catalog_queries(method, 'plain_schema', 'plain_name')
+    unusual = _catalog_queries(method, schema, name)
+    assert baseline, 'expected the method to issue a catalog query'
+    # Same SQL text regardless of the names; only the bound values differ.
+    assert [sql for sql, _ in unusual] == [sql for sql, _ in baseline]
+    for sql, params in unusual:
+        assert schema not in sql and name not in sql
+        assert 'plain_schema' not in sql and 'plain_name' not in sql
+
+
+@pytest.mark.parametrize('method', sorted(CATALOG_CALLS))
+def test_catalog_names_are_sent_as_bound_values(method):
+    schema, name = "abc'def", "tab'le"
+    calls = _catalog_queries(method, schema, name)
+    sent = [value for _, params in calls for value in (params or {}).values()]
+    if method != 'has_type':
+        assert schema in sent
+    if method not in ('has_schema', 'get_table_names', 'get_view_names'):
+        assert name in sent
+    for sql, params in calls:
+        placeholders = set(re.findall(r'(?<!:):(\w+)', sql))
+        assert placeholders == set(params or {})
+
+
+@pytest.mark.parametrize('method', sorted(set(CATALOG_CALLS) - {'has_schema', 'has_type'}))
+def test_catalog_without_schema_binds_only_what_is_used(method):
+    calls = _catalog_queries(method, None, "tab'le")
+    for sql, params in calls:
+        assert "tab'le" not in sql
+        placeholders = set(re.findall(r'(?<!:):(\w+)', sql))
+        assert placeholders == set(params or {})
+
+
+@pytest.mark.parametrize('type_name', ['integer', 'INTEGER', 'Integer'])
+def test_has_type_matches_catalog_names_case_insensitively(type_name):
+    # v_catalog.types stores names such as 'Integer'; emulate its comparison.
+    with sa.create_engine('sqlite://').connect() as conn:
+        conn.execute(sa.text('ATTACH DATABASE ":memory:" AS v_catalog'))
+        conn.execute(sa.text('CREATE TABLE v_catalog.types (type_name TEXT)'))
+        conn.execute(sa.text("INSERT INTO v_catalog.types VALUES ('Integer'), ('Varchar')"))
+        dialect = VerticaDialect()
+        assert dialect.has_type(conn, type_name) is True
+        assert dialect.has_type(conn, 'no_such_type') is False
